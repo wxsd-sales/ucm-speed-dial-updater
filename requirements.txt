@@ -1,0 +1,7 @@
+python-dotenv==0.21.0
+requests==2.31.0
+requests-file==1.5.1
+requests-toolbelt==0.10.1
+urllib3==1.26.13
+lxml==5.1.0
+zeep==4.2.1
