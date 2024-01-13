@@ -4,52 +4,58 @@ This is a example script which update the names of speed dials based on provisio
 
 ## Overview
 
-Usin the UCM AXL APIs, this script will identify any IP Phones with speed dials already configured and then will update the name of the speed dial with the username associated with that speed dial extension.
+Using the UCM AXL APIs, this script will identify any IP Phones with speed dials already configured and then will update the name of the speed dial with the username associated with that speed dial extension.
 
-If the extension hasn't been provisioned to a user yet, the speed dial name will be renamed to a unprovisioning status. The wording of which is configurable within the script.
+If the extension hasn't been provisioned to a user yet, the speed dial name will be renamed to a unavailable status. The wording of which is configurable within the script.
+
+<img width="620" alt="image" src="https://github.com/wxsd-sales/ucm-speed-dial-updater/assets/21026209/a2159bcd-ce13-49fc-978d-29b7f141c957">
+
 
 
 ### Flow Diagram
 
-<!-- *MANDATORY*  Insert Your Flow Diagram Here (if small PoC, alternative option is to include break down how it works here instead of diagram) -->
-![image/gif](insert img link here)
-
+![ucm-speed-dial-updater-flow](https://github.com/wxsd-sales/ucm-speed-dial-updater/assets/21026209/8f5e78fb-72c0-4c94-a9d4-cfdeedb697cb)
 
 
 ## Setup
 
 ### Prerequisites & Dependencies: 
 
-- Is this dependant on having another repo
-- Insert pre-requisites in bullets
-- Insert pre-requisite here  Also state any assumptions that you may have made about the user.
-- Limit nested bullets
+- CUCM 12.5 or above
+- CUCM Application Account with AXL Access
+- Python version >= 3.8
+- Pip install modules
 
 
 <!-- GETTING STARTED -->
 
 ### Installation Steps:
-1.  Include step one here
+1.  Close this repo:
     ```sh
-    insert line of code here if applicable
+    git clone https://github.com/wxsd-sales/ucm-speed-dial-updater.git
     ```
-2.  Insert step two here
-    Insert screenshot, if applicable
+2.  Insert project requirements:
+    ```sh
+    pip install -r requirements.txt
+    ```
+3. Rename ``.env.example`` to ``.env`` and add your CUCM Server address and AXL Account Credentials:
+    ```
+    CUCM_ADDRESS=cucm.example.com
+    AXL_USERNAME=axlaccount
+    AXL_PASSWORD=axlaccountpassword
+    ```
+4. Run the script using:
+    ```sh
+    python speed_dial_updater.py
+    ```
+5. (Option) Setup a Cron job ( Linux ), Automator Task ( Mac)  or Scheduled Task ( Windows ) to periodically run this script and keep Speed Dial Labels updated on the CUCM
     
     
     
 ## Demo
 
-<!-- Insert link to the website below (if deployed). -->
-Check out our live demo, available [here](<insert link>)!
-
 <!-- Keep the following statement -->
 *For more demos & PoCs like this, check out our [Webex Labs site](https://collabtoolbox.cisco.com/webex-labs).
-
-
-<!-- Update your vidcast title, video screenshot, vidcast/youtube link & name -->
-[![Your Video Title ](assets/peer_support_main.PNG)](https://www.youtube.com/watch?v=SqZhiC8jHhU&t=10s, "<insert demo name here>")
-
 
 
 ## License
