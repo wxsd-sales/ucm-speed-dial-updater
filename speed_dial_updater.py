@@ -1,31 +1,84 @@
-from lxml import etree
-from requests import Session
-from requests.auth import HTTPBasicAuth
+
 import sys
 import urllib3
 import logging
 import datetime
+import csv
+import argparse
+import os
 
+from dotenv import load_dotenv
 from zeep import Client, Settings, Plugin, xsd
 from zeep import xsd
 from zeep.transports import Transport
 from zeep.exceptions import Fault
+from lxml import etree
+from requests import Session
+from requests.auth import HTTPBasicAuth
 
-
-import os
-from dotenv import load_dotenv
 load_dotenv()
 
-SPEED_DIAL_MISSING = 'N/A'
+
+
+# Define our CLI argument variables
+parser = argparse.ArgumentParser(prog='UCM Speed Dial Updater', 
+                                 description='This Script updates the Speed Dials labels for IP Phones on your UCM Cluster by matching the Speed Dial with an Extension number')
+
+parser.add_argument('-s', '--survey', dest='survey', action='store_true', default=False,
+                    help='Create a survey of Speed Dials labels that require updating')
+
+parser.add_argument('-b','--backup', dest='backup', action='store_true', default=True,
+                    help='Create a backup of your UCM Speed dials (default: True)')
+
+parser.add_argument('-r', '--restore', dest='restore', action='store_true',
+                    help='Restore a backup of your UCM Speed dials')
+
+parser.add_argument('-f', '--force', dest='force', action='store_true',
+                    help='Perform Speed Dial updates without confirmation')
+
+parser.add_argument('--min-digits', dest='minDigits', action='store_const', const=4,
+                    help='Minimum number of Speed Dial Digits which will be updated (default: 4)')
+
+parser.add_argument('--max-digits', dest='maxDigits', action='store_const', const=4,
+                    help='Maximum number of Speed Dial Digits which will be updated (default: 4)')
+
+parser.add_argument('--replacement-token', dest='replacementToken', action='store_const', const='N/A',
+                    help='Text to replace unfound Speed Dial Extensions (default: \'N/A\')')
+
+parser.add_argument('--ucm-address', dest='ucmAddress', action='store',
+                    help='FQDN or IP Address of your UCM')
+
+parser.add_argument('--axl-username', dest='axlUsername', action='store',
+                    help='Username of your UCM AXL Account')
+
+parser.add_argument('--axl-password', dest='axlPassword', action='store',
+                    help='Password of your UCM AXL Account')
+
+args = parser.parse_args()
+
+print(args)
+
+SPEED_DIAL_REPLACEMENT = args.replacementToken
 
 # Change to true to enable output of request/response headers and XML
 DEBUG = False
 
-LIVE = True
 
 WSDL_FILE = 'schema/AXLAPI.wsdl'
-CUCM_ADDRESS = os.getenv( "CUCM_ADDRESS" )
+UCM_ADDRESS = os.getenv( "UCM_ADDRESS" ) or args.ucmAddress
+AXL_USERNAME = os.getenv( 'AXL_USERNAME' ) or args.axlUsername
+AXL_PASSWORD = os.getenv( 'AXL_PASSWORD' ) or args.axlPassword
 
+if UCM_ADDRESS is None:
+    sys.exit('Error: Missing UCM Address in .env or argument')
+
+if AXL_USERNAME is None:
+    sys.exit('Error: Missing AXL Username in .env or argument')
+
+if AXL_PASSWORD is None:
+    sys.exit('Error: Missing AXL Password in .env or argument')
+
+print(UCM_ADDRESS, AXL_PASSWORD, AXL_PASSWORD)
 
 logging.basicConfig(filename=f'speeddial_updater.log', encoding='utf-8', level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
 
@@ -44,7 +97,7 @@ urllib3.disable_warnings( urllib3.exceptions.InsecureRequestWarning )
 # CERT = 'changeme.pem'
 # session.verify = CERT
 
-session.auth = HTTPBasicAuth( os.getenv( 'AXL_USERNAME' ), os.getenv( 'AXL_PASSWORD' ) )
+session.auth = HTTPBasicAuth(AXL_USERNAME, AXL_PASSWORD )
 
 transport = Transport( session = session, timeout = 10 )
 
@@ -60,10 +113,11 @@ client = Client( WSDL_FILE, settings = settings, transport = transport,
 
 # Create the Zeep service binding to AXL at the specified CUCM
 service = client.create_service( '{http://www.cisco.com/AXLAPIService/}AXLAPIBinding',
-                                f'https://{CUCM_ADDRESS}:8443/axl/' )
+                                f'https://{UCM_ADDRESS}:8443/axl/' )
 
 
-print('Getting list of Directory Numbers from CUCM:', CUCM_ADDRESS )
+print('Getting list of Directory Numbers from CUCM:', UCM_ADDRESS )
+
 lineDict = {}
 
 try:
@@ -80,7 +134,7 @@ print(f'[{len(lineDict)}] Directory Numbers Found ')
 print(lineDict)
 
 phones = {}
-print('Getting list of Phones from CUCM:', CUCM_ADDRESS )
+print('Getting list of Phones from CUCM:', UCM_ADDRESS )
 try:
     resp = service.listPhone( searchCriteria = { 'name': 'SEP%'} , returnedTags = { 'name':'', 'description': '' } )
     #print(resp['return']['phone'])
@@ -122,8 +176,8 @@ for phone in phones:
                 updatedSpeeddials[sdLength]['label'] = lineDict[speeddial['dirn']]
             elif not speeddial['dirn'] in lineDict:
                 requiresUpdate = True
-                print(speeddial['dirn'], 'Not found changing', speeddial['label'], 'to', SPEED_DIAL_MISSING)
-                updatedSpeeddials[sdLength]['label'] = SPEED_DIAL_MISSING
+                print(speeddial['dirn'], 'Not found changing', speeddial['label'], 'to', SPEED_DIAL_REPLACEMENT)
+                updatedSpeeddials[sdLength]['label'] = SPEED_DIAL_REPLACEMENT
                 
 
         if requiresUpdate:
@@ -134,20 +188,55 @@ for phone in phones:
         print( f'\nZeep error: With getPhone: { err }' )
         sys.exit( 1 )
 
+print(f'[{len(phoneUpdates)}] Phones require updated Speed Dial Labels')
 
-print(f'Updating [{len(phoneUpdates)}] Phones')
+if args.survey:
+    print('Survey only requested')
+    with open('survey.csv', 'w') as f:  # You will need 'wb' mode in Python 2.x
+        w = csv.DictWriter(f, phoneUpdates.keys())
+        w.writeheader()
+        w.writerow(phoneUpdates)
+    sys.exit( 'Update Speed Dial Label Survey saved to Survey.csv' )
 
-if not LIVE:
-    logging.info(f'Script is not live - [{len(phoneUpdates)}] Phones Require Speeddial Updates')
-    sys.exit( 1 )
+
+if args.backup:
+    print('Creating new Backup of Speed Dials')
+    with open('survey.csv', 'w') as f:  # You will need 'wb' mode in Python 2.x
+        w = csv.DictWriter(f, phoneUpdates.keys())
+        w.writeheader()
+        w.writerow(phoneUpdates)
+    sys.exit( 'Update Speed Dial Label Survey saved to Survey.csv' )
+
+
 
 logging.info(f'Updating Speeddials on [{len(phoneUpdates)}] Phones')
 
-for phone in phoneUpdates:
-    update = {'speeddial': phoneUpdates[phone]}      
+def updateSpeedDial(phone, speedDials):
+    print('Updating Speed Dials on Phone', phone, speedDials)
     try:
-        print('Updatings Phone', phone, phoneUpdates[phone])
         resp = service.updatePhone( uuid = phone, speeddials = update)
     except Exception as err:
-        print( f'\nZeep error: With getPhone: { err }' )
+        print( f'\nZeep error: With updatePhone: { err }' )
         sys.exit( 1 )
+
+
+if args.force:
+    print('Force update requested, no individual confirmation will be ask')
+
+for phone in phoneUpdates:
+    update = {'speeddial': phoneUpdates[phone]}
+    if not args.force:
+        answer = input(f"About to update Speed Dials Phone {phone} Continue? Y/N")
+        if answer.upper() in ["Y", "YES"]:
+            # Do action you need
+            try:
+                updateSpeedDial(phone, update)
+            except Exception as err:
+                print( f'\nZeep error: With updatePhone: { err }' )
+                sys.exit( 1 )
+        elif answer.upper() in ["N", "NO"]:
+            print(f'Skipping Speed Dial update for Phone {phone} ')
+    else: updateSpeedDial(phone, update)
+            
+
+
