@@ -1,4 +1,3 @@
-
 import sys
 import logging
 import os
@@ -166,35 +165,3 @@ match args.command:
             sys.exit( 'Backup file loaded - No Backups Where Found' )
         sys.exit( 'Speed Dial Restore Completed' )
         
-
-# Get list of Directory Number
-directoryNumbers = connection.getDirectoryNumbers()
-
-# Get list of phones enad ther speed dials
-speedDials = connection.getAllPhonesSpeedDials()
-
-print('Phones found with Speed Dials:', len(speedDials))
-
-# If Bactkup True, save a backup
-if len(speedDials) > 0:
-    print('Creating Phone Speed Dial Backup')
-    saveBackup(BACKUP_DIR, 'speeddial-backup', speedDials)
-elif args.backup and len(speedDials) == 0:
-    print('No Backup created as no Phones with Speed Dials were found')
-
-# Identify any Speed Dials that need updating
-updatedSpeedDials = identifyUpdates(speedDials, directoryNumbers, MIN_DIGITS, MAX_DIGITS, SPEED_DIAL_REPLACEMENT)
-
-print('Phones requiring updates:', len(updatedSpeedDials))
-
-
-# If there are Speed Dials requiring updates and we are in update or force update mode, begin updating
-if len(updatedSpeedDials) > 0 and (args.update or args.forceUpdate):
-    print('Updating Speed Dials on', len(updatedSpeedDials), 'Phones' if len(updatedSpeedDials) > 1 else 'Phone')
-    connection.updateSpeedDials(updatedSpeedDials, args.forceUpdate)
-elif len(updatedSpeedDials) > 0:
-    print('Updating not requested, no updates will be made')
-elif args.update or args.forceUpdate:
-    print('Update requested however there are no Speed Dials to update')
-
-sys.exit( 'Completed' )
