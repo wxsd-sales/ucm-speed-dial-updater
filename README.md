@@ -23,7 +23,7 @@ If the extension hasn't been provisioned to a user yet, the speed dial name will
 
 - CUCM 12.5 or above
 - CUCM Application Account with AXL Access
-- Python version >= 3.8
+- Python version >= 3.10
 - Pip install modules
 
 
