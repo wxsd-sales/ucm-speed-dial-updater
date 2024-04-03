@@ -1,74 +1,66 @@
 
 import sys
-import urllib3
 import logging
-import datetime
-import csv
-import argparse
 import os
-
+from prettytable import PrettyTable
+from datetime import datetime
 from dotenv import load_dotenv
-from zeep import Client, Settings, Plugin, xsd
-from zeep import xsd
-from zeep.transports import Transport
-from zeep.exceptions import Fault
-from lxml import etree
-from requests import Session
-from requests.auth import HTTPBasicAuth
+from pathlib import Path
+from ucm_connection import UCMConnection
+from utils import identifyUpdates, loadBackup, saveBackup
+from console_args import CONSOLE_ARGS
 
+# Load CLI Argument
+args = CONSOLE_ARGS
+
+# Load .env file
 load_dotenv()
 
+# Enable Debugging if Debug parameter set
+DEBUG = args.debug
+SOAP_DEBUG = args.soapDebug
 
 
-# Define our CLI argument variables
-parser = argparse.ArgumentParser(prog='UCM Speed Dial Updater', 
-                                 description='This Script updates the Speed Dials labels for IP Phones on your UCM Cluster by matching the Speed Dial with an Extension number')
-
-parser.add_argument('-s', '--survey', dest='survey', action='store_true', default=False,
-                    help='Create a survey of Speed Dials labels that require updating')
-
-parser.add_argument('-b','--backup', dest='backup', action='store_true', default=True,
-                    help='Create a backup of your UCM Speed dials (default: True)')
-
-parser.add_argument('-r', '--restore', dest='restore', action='store_true',
-                    help='Restore a backup of your UCM Speed dials')
-
-parser.add_argument('-f', '--force', dest='force', action='store_true',
-                    help='Perform Speed Dial updates without confirmation')
-
-parser.add_argument('--min-digits', dest='minDigits', action='store_const', const=4,
-                    help='Minimum number of Speed Dial Digits which will be updated (default: 4)')
-
-parser.add_argument('--max-digits', dest='maxDigits', action='store_const', const=4,
-                    help='Maximum number of Speed Dial Digits which will be updated (default: 4)')
-
-parser.add_argument('--replacement-token', dest='replacementToken', action='store_const', const='N/A',
-                    help='Text to replace unfound Speed Dial Extensions (default: \'N/A\')')
-
-parser.add_argument('--ucm-address', dest='ucmAddress', action='store',
-                    help='FQDN or IP Address of your UCM')
-
-parser.add_argument('--axl-username', dest='axlUsername', action='store',
-                    help='Username of your UCM AXL Account')
-
-parser.add_argument('--axl-password', dest='axlPassword', action='store',
-                    help='Password of your UCM AXL Account')
-
-args = parser.parse_args()
-
-print(args)
-
-SPEED_DIAL_REPLACEMENT = args.replacementToken
-
-# Change to true to enable output of request/response headers and XML
-DEBUG = False
+if DEBUG:
+    print(args)
 
 
+# Specify location of WSDL file and appliaction directories
 WSDL_FILE = 'schema/AXLAPI.wsdl'
+BACKUP_DIR = 'backups'
+SURVEY_DIR = 'surveys'
+LOG_DIR = 'logs'
+
+# Load UCM Address, AXL Credentials and Variables from .env file or CLI arguments
 UCM_ADDRESS = os.getenv( "UCM_ADDRESS" ) or args.ucmAddress
 AXL_USERNAME = os.getenv( 'AXL_USERNAME' ) or args.axlUsername
 AXL_PASSWORD = os.getenv( 'AXL_PASSWORD' ) or args.axlPassword
+SPEED_DIAL_REPLACEMENT = 'N/A'
 
+
+   
+
+# Load MIN and MAX Digits from CLI or .env but default to 4 if none are found
+MAX_DIGITS = 4
+MIN_DIGITS = 4
+
+if args.command != 'restore':
+    SPEED_DIAL_REPLACEMENT = os.getenv( "REPLACEMENT_TOKEN" ) or args.replacementToken
+    
+    if os.getenv( 'MIN_DIGITS' ):
+        MIN_DIGITS = int(os.getenv( 'MIN_DIGITS' ))
+    else:
+        MIN_DIGITS = args.minDigits
+
+    if os.getenv( 'MAX_DIGITS' ):
+        MAX_DIGITS = int(os.getenv( 'MAX_DIGITS' ))
+    else:
+        MAX_DIGITS = args.maxDigits
+
+
+
+
+# Ensure UCM Address and AXL Credentails are not mssing before continuing
 if UCM_ADDRESS is None:
     sys.exit('Error: Missing UCM Address in .env or argument')
 
@@ -78,165 +70,131 @@ if AXL_USERNAME is None:
 if AXL_PASSWORD is None:
     sys.exit('Error: Missing AXL Password in .env or argument')
 
-print(UCM_ADDRESS, AXL_PASSWORD, AXL_PASSWORD)
+if MIN_DIGITS < 1 :
+    sys.exit('Error: MIN Digits below 1')
 
-logging.basicConfig(filename=f'speeddial_updater.log', encoding='utf-8', level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
-
-# The first step is to create a SOAP client session
-session = Session()
-
-# We avoid certificate verification by default
-# And disable insecure request warnings to keep the output clear
-session.verify = False
-urllib3.disable_warnings( urllib3.exceptions.InsecureRequestWarning )
-
-# To enable SSL cert checking (recommended for production)
-# place the CUCM Tomcat cert .pem file in the root of the project
-# and uncomment the two lines below
-
-# CERT = 'changeme.pem'
-# session.verify = CERT
-
-session.auth = HTTPBasicAuth(AXL_USERNAME, AXL_PASSWORD )
-
-transport = Transport( session = session, timeout = 10 )
-
-# strict=False is not always necessary, but it allows Zeep to parse imperfect XML
-settings = Settings( strict = False, xml_huge_tree = True )
-
-# If debug output is requested, add the MyLoggingPlugin callback
-plugin = [ MyLoggingPlugin() ] if DEBUG else []
-
-# Create the Zeep client with the specified settings
-client = Client( WSDL_FILE, settings = settings, transport = transport,
-        plugins = plugin )
-
-# Create the Zeep service binding to AXL at the specified CUCM
-service = client.create_service( '{http://www.cisco.com/AXLAPIService/}AXLAPIBinding',
-                                f'https://{UCM_ADDRESS}:8443/axl/' )
+if MIN_DIGITS > MAX_DIGITS:
+    sys.exit('Error: MIN Digits is greater than MAX Digits')
 
 
-print('Getting list of Directory Numbers from CUCM:', UCM_ADDRESS )
+# Create Bacup, Survey and Logging directories if not present
+Path(BACKUP_DIR).mkdir(parents=True, exist_ok=True)
+Path(SURVEY_DIR).mkdir(parents=True, exist_ok=True)
+Path(LOG_DIR).mkdir(parents=True, exist_ok=True)
 
-lineDict = {}
+timestamp = str(datetime.now().strftime("%Y-%m-%d-%H-%M-%S"))
 
-try:
-    resp = service.listLine( searchCriteria = {'pattern': '%'} , returnedTags = { 'pattern': xsd.Nil , 'description': xsd.Nil} )
-    lines = resp['return']['line']
-    for line in lines:
-        lineDict[ line['pattern']] = line['description']
-except Exception as err:
-    print( f'\nZeep error: With listLine: { err }' )
-    sys.exit( 1 )
+logging.basicConfig(filename=LOG_DIR+'/log-'+timestamp+'.log', filemode='w', format='%(name)s - %(levelname)s - %(message)s')
 
-print(f'[{len(lineDict)}] Directory Numbers Found ')
+if DEBUG:
+    print(f'Using UCM Address: {UCM_ADDRESS} - AXL Username:  {AXL_PASSWORD} - AXL PASSWORD: {"#" * len(AXL_PASSWORD) }')
 
-print(lineDict)
+print('Setting up Connection to UCM:', UCM_ADDRESS)
 
-phones = {}
-print('Getting list of Phones from CUCM:', UCM_ADDRESS )
-try:
-    resp = service.listPhone( searchCriteria = { 'name': 'SEP%'} , returnedTags = { 'name':'', 'description': '' } )
-    #print(resp['return']['phone'])
-    for phone in resp['return']['phone']:
-        phones[phone['uuid']] = phone['name'] + ' ' + phone['description']
-
-except Exception as err:
-    print( f'\nZeep error: With listPhone: { err }' )
-    sys.exit( 1 )
-
-print(phones)
-
-print(f'[{len(phones)}] Phones Found')
+# Initilize UCM Connnection
+connection = UCMConnection(UCM_ADDRESS, AXL_USERNAME, AXL_PASSWORD, WSDL_FILE, DEBUG, args.soapDebug )
 
 
-phoneUpdates = {}
+match args.command:
+    case "survey":
+        print("Performing Speed Dial Survey")
 
-for phone in phones:
-    print(phone)
-    try:
-        resp = service.getPhone( uuid = phone, returnedTags = {'speeddials': { 'speeddial': {'dirn': '', 'label': '', 'index': ''}}} )
-        
-        # Ignore phones with no speeddials
-        if resp['return']['phone']['speeddials'] == None:
-            continue
-        print(resp['return']['phone'])
-        speeddials = resp['return']['phone']['speeddials']['speeddial']
-        updatedSpeeddials = []
-        requiresUpdate = False
-    
-        # Check if each speed dial number matches a Director Number extension
-        for speeddial in speeddials:
-            print(speeddial['label'])
-            updatedSpeeddials.append(speeddial)
-            sdLength = len(updatedSpeeddials)-1
-            if speeddial['dirn'] in lineDict and speeddial['label'] != lineDict[speeddial['dirn']]:
-                requiresUpdate = True
-                print(speeddial['dirn'], phones[phone], 'Found needs updating', speeddial['label'], 'to', lineDict[speeddial['dirn']] )
-                updatedSpeeddials[sdLength]['label'] = lineDict[speeddial['dirn']]
-            elif not speeddial['dirn'] in lineDict:
-                requiresUpdate = True
-                print(speeddial['dirn'], 'Not found changing', speeddial['label'], 'to', SPEED_DIAL_REPLACEMENT)
-                updatedSpeeddials[sdLength]['label'] = SPEED_DIAL_REPLACEMENT
-                
+        # Get list of Directory Number
+        directoryNumbers = connection.getDirectoryNumbers()
 
-        if requiresUpdate:
-            phoneUpdates[phone] = updatedSpeeddials
-            print('Phone ', phone, 'requies speeddial updatting')
-        
-    except Exception as err:
-        print( f'\nZeep error: With getPhone: { err }' )
-        sys.exit( 1 )
+        # Get list of phones enad ther speed dials
+        phonesWithSpeedDials = connection.getAllPhonesWithSpeedDials()
 
-print(f'[{len(phoneUpdates)}] Phones require updated Speed Dial Labels')
+        numOfPhones = len(phonesWithSpeedDials)
 
-if args.survey:
-    print('Survey only requested')
-    with open('survey.csv', 'w') as f:  # You will need 'wb' mode in Python 2.x
-        w = csv.DictWriter(f, phoneUpdates.keys())
-        w.writeheader()
-        w.writerow(phoneUpdates)
-    sys.exit( 'Update Speed Dial Label Survey saved to Survey.csv' )
+        if(numOfPhones == 0):
+            sys.exit( 'No Phones with Speed Dials found - Survey was not created' )
+        else: 
+            print('Number of Phones with Speed Dials found:', numOfPhones)
+            # Identify any Speed Dials that need updating
+            updatedSpeedDials = identifyUpdates(phonesWithSpeedDials, directoryNumbers, MIN_DIGITS, MAX_DIGITS, SPEED_DIAL_REPLACEMENT)
+            print('Phones requiring updates:', len(updatedSpeedDials))
+            # Generate Survey Report
 
+        sys.exit( 'Speed Dial Survey Completed' )
 
-if args.backup:
-    print('Creating new Backup of Speed Dials')
-    with open('survey.csv', 'w') as f:  # You will need 'wb' mode in Python 2.x
-        w = csv.DictWriter(f, phoneUpdates.keys())
-        w.writeheader()
-        w.writerow(phoneUpdates)
-    sys.exit( 'Update Speed Dial Label Survey saved to Survey.csv' )
+    case "update":
+        print("Performing Speed Dial Update")
 
+        # Get list of Directory Number
+        directoryNumbers = connection.getDirectoryNumbers()
 
+        # Get list of phones enad ther speed dials
+        phonesWithSpeedDials = connection.getAllPhonesWithSpeedDials()
 
-logging.info(f'Updating Speeddials on [{len(phoneUpdates)}] Phones')
+        numOfPhones = len(phonesWithSpeedDials)
 
-def updateSpeedDial(phone, speedDials):
-    print('Updating Speed Dials on Phone', phone, speedDials)
-    try:
-        resp = service.updatePhone( uuid = phone, speeddials = update)
-    except Exception as err:
-        print( f'\nZeep error: With updatePhone: { err }' )
-        sys.exit( 1 )
-
-
-if args.force:
-    print('Force update requested, no individual confirmation will be ask')
-
-for phone in phoneUpdates:
-    update = {'speeddial': phoneUpdates[phone]}
-    if not args.force:
-        answer = input(f"About to update Speed Dials Phone {phone} Continue? Y/N")
-        if answer.upper() in ["Y", "YES"]:
-            # Do action you need
-            try:
-                updateSpeedDial(phone, update)
-            except Exception as err:
-                print( f'\nZeep error: With updatePhone: { err }' )
-                sys.exit( 1 )
-        elif answer.upper() in ["N", "NO"]:
-            print(f'Skipping Speed Dial update for Phone {phone} ')
-    else: updateSpeedDial(phone, update)
+        if(numOfPhones == 0):
+            sys.exit( 'No Phones with Speed Dials found - Update cancelled' )
+        else: 
+            print('Number of Phones with Speed Dials found:', numOfPhones)
             
+            # Save Backup
+            print('Creating Speed Dial Backup')
+            saveBackup(BACKUP_DIR, 'speeddial-backup', phonesWithSpeedDials)
+            
+            # Identify any Speed Dials that need updating
+            updatedSpeedDials = identifyUpdates(phonesWithSpeedDials, directoryNumbers, MIN_DIGITS, MAX_DIGITS, SPEED_DIAL_REPLACEMENT)
+            
+            numOfPhonesRequiringUpdate = len(updatedSpeedDials)
+
+            # If there are Speed Dials requiring updates and we are in update or force update mode, begin updating
+            if numOfPhonesRequiringUpdate > 0 :
+                print('Number of Phones requiring Speed Dial Updates:', numOfPhonesRequiringUpdate)
+
+                connection.updateSpeedDials(updatedSpeedDials, args.forceUpdate)
+            else:
+                print('Update requested however there are no Speed Dials to update')
+
+            # Generate Survey Report
+            sys.exit( 'Speed Dial Update Completed' )
+
+    case "restore":
+        print("Performing Restore")
+        filetest = args.filename
+        print("Loading Backup File:", filetest.name)
+        backup = loadBackup(filetest.name)
+        if len(backup) > 0:
+            print('Backup Loaded -', len(backup), 'Phones' if len(backup) > 1 else 'Phone' , ' found to restore')
+            connection.restoreSpeedDials(backup, args.forceUpdate)
+        else:
+            sys.exit( 'Backup file loaded - No Backups Where Found' )
+        sys.exit( 'Speed Dial Restore Completed' )
+        
+
+# Get list of Directory Number
+directoryNumbers = connection.getDirectoryNumbers()
+
+# Get list of phones enad ther speed dials
+speedDials = connection.getAllPhonesSpeedDials()
+
+print('Phones found with Speed Dials:', len(speedDials))
+
+# If Bactkup True, save a backup
+if len(speedDials) > 0:
+    print('Creating Phone Speed Dial Backup')
+    saveBackup(BACKUP_DIR, 'speeddial-backup', speedDials)
+elif args.backup and len(speedDials) == 0:
+    print('No Backup created as no Phones with Speed Dials were found')
+
+# Identify any Speed Dials that need updating
+updatedSpeedDials = identifyUpdates(speedDials, directoryNumbers, MIN_DIGITS, MAX_DIGITS, SPEED_DIAL_REPLACEMENT)
+
+print('Phones requiring updates:', len(updatedSpeedDials))
 
 
+# If there are Speed Dials requiring updates and we are in update or force update mode, begin updating
+if len(updatedSpeedDials) > 0 and (args.update or args.forceUpdate):
+    print('Updating Speed Dials on', len(updatedSpeedDials), 'Phones' if len(updatedSpeedDials) > 1 else 'Phone')
+    connection.updateSpeedDials(updatedSpeedDials, args.forceUpdate)
+elif len(updatedSpeedDials) > 0:
+    print('Updating not requested, no updates will be made')
+elif args.update or args.forceUpdate:
+    print('Update requested however there are no Speed Dials to update')
+
+sys.exit( 'Completed' )
