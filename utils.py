@@ -5,7 +5,7 @@ from prettytable import PrettyTable
 
 def saveBackup( location, filename, data):
     print('Backup Data Saved:')
-    print(data)
+    # print(data)
     timestamp = str(datetime.now().strftime("%Y-%m-%d-%H-%M-%S"))
     with open(f'{location}/{filename}-{timestamp}.pk1', 'wb') as f:
         pickle.dump(data, f)
@@ -38,10 +38,10 @@ def identifyUpdates(speedDials, directoryNumbers, min, max, replacement):
             # If Directory number is too small or two lager, do not update
             if speedDialLength < min or speedDialLength > max:
                 continue
-
+            
             if speedDial['dirn'] in directoryNumbers and speedDial['label'] != directoryNumbers[speedDial['dirn']]:
-                speedDialsCopy['speedDials'][index]['label'] =  directoryNumbers[speedDial['dirn']]
                 summary.add_row([speedDial['dirn'], speedDial['label'], directoryNumbers[speedDial['dirn']]])
+                speedDialsCopy['speedDials'][index]['label'] =  directoryNumbers[speedDial['dirn']]
                 requiresUpdate = True
 
             elif not speedDial['dirn'] in directoryNumbers and speedDial['label'] != replacement:
